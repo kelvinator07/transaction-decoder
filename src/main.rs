@@ -1,35 +1,8 @@
-use serde::Serialize;
+mod transaction;
+
+use sha2::{Digest, Sha256};
 use std::io::Read;
-
-#[derive(Debug, Serialize)]
-struct Transaction {
-    version: u32,
-    inputs: Vec<Input>,
-    outputs: Vec<Output>,
-}
-
-#[derive(Debug, Serialize)]
-struct Input {
-    txid: String,
-    output_index: u32,
-    script_sig: String,
-    sequence: u32,
-}
-
-struct Amount(u64);
-
-impl Amount {
-    pub fn to_btc(&self) -> f64 {
-        self.0 as f64 / 100_000_000.0
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct Output {
-    amount: f64,
-    index: u64,
-    script_pubkey: String,
-}
+use transaction::{Amount, Input, Output, Transaction, Txid};
 
 fn read_compact_size(transaction_bytes: &mut &[u8]) -> u64 {
     let mut compact_size = [0_u8; 1];
@@ -75,14 +48,14 @@ fn read_compact_size(transaction_bytes: &mut &[u8]) -> u64 {
 fn read_u32(transaction_bytes: &mut &[u8]) -> u32 {
     let mut buffer = [0; 4]; // 4 bytes = 8 hex chars
     transaction_bytes.read(&mut buffer).unwrap();
-    u32::from_le_bytes(buffer) // no semi colon means it will return automatically
+    u32::from_le_bytes(buffer) // no semicolon means it will return automatically
 }
 
 // return type is an integer u64 - 64 bytes
 fn read_amount(transaction_bytes: &mut &[u8]) -> Amount {
     let mut buffer = [0; 8]; // 8 bytes = 16 hex chars
     transaction_bytes.read(&mut buffer).unwrap();
-    Amount(u64::from_le_bytes(buffer)) // no semi colon means it will return automatically
+    Amount::from_sat(u64::from_le_bytes(buffer)) // no semicolon means it will return automatically
 }
 
 // param is a mutable reference to a slice i.e &mut &[u8]
@@ -102,6 +75,18 @@ fn read_script(transaction_bytes: &mut &[u8]) -> String {
     let mut buffer = vec![0_u8; script_size];
     transaction_bytes.read(&mut buffer[..]).unwrap(); // dereference coersion, rust implicitly dereferences an object when making a method call
     hex::encode(buffer) // convert to hex string
+}
+
+fn hash_raw_transaction(raw_transaction: &[u8]) -> Txid {
+    let mut hasher = Sha256::new();
+    hasher.update(&raw_transaction);
+    let hash1 = hasher.finalize();
+
+    let mut hasher = Sha256::new();
+    hasher.update(hash1);
+    let hash2 = hasher.finalize();
+
+    Txid::from_bytes(hash2.into())
 }
 
 fn main() {
@@ -130,7 +115,7 @@ fn main() {
     let output_count = read_compact_size(&mut bytes_slice);
     let mut outputs = vec![];
     for index in 0..output_count {
-        let amount = read_amount(&mut bytes_slice).to_btc(); // amount is 8 bytes = 16 chars = u64 integer
+        let amount = read_amount(&mut bytes_slice); // amount is 8 bytes = 16 chars = u64 integer
         let script_pubkey = read_script(&mut bytes_slice); // script_pub_key length varies
 
         outputs.push(Output {
@@ -140,10 +125,15 @@ fn main() {
         });
     }
 
+    let lock_time = read_u32(&mut bytes_slice);
+    let transaction_id = hash_raw_transaction(&transaction_bytes);
+
     let transaction = Transaction {
+        transaction_id,
         version,
         inputs,
         outputs,
+        lock_time,
     };
     println!(
         "Transaction {}",
